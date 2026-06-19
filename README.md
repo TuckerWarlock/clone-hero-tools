@@ -183,11 +183,3 @@ pyproject.toml        Project metadata, tool config (Black, Ruff, Pytest)
 .python-version       Pins Python 3.14 for uv / pyenv
 ```
 
----
-
-## Credits
-
-Downcharting algorithm and MIDI mapping ported from the original
-[Clone Hero Difficulty Creator](https://github.com/lililwavezlilil/Clone-Hero-Difficulty-Creator)
-and [Clone Hero Midi 2 Chart](https://github.com/lililwavezlilil/Clone-Hero-Midi-2-Chart)
-by [@lililwavezlilil](https://github.com/lililwavezlilil).
