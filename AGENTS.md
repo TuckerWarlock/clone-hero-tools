@@ -1,75 +1,90 @@
 # Clone Hero Tools — Agent Instructions
 
-Three standalone Python scripts for managing a Clone Hero songs library.
-Designed to run in sequence: **Midi2Chart → No Part Deleter → Difficulty Creator**
+This repository is a single Python CLI tool focused on one workflow:
+take Expert-only Clone Hero charts and generate Hard, Medium, and Easy.
 
-## Project Structure
+## Scope
+
+- Main entrypoint: `ch-chart-fix.py`
+- Inputs: song folder, songs root (`--batch`), or `.zip`
+- Core operations:
+	- Zip extraction (wrapped + flat layouts)
+	- MIDI-to-chart conversion when needed (`.mid` / `.midi`)
+	- Difficulty generation from Expert to Hard/Medium/Easy
+
+## Source Layout
 
 ```
-Clone-Hero-Midi-2-Chart/        CloneHeroMidi2Chart.py
-Clone-Hero-No-Part-Deleter/     CloneHeroNoPartDeleter.py
-Clone-Hero-Difficulty-Creator/  CloneHeroDifficultyCreator.py
+ch-chart-fix.py
+tests/
+	test_ch_chart_fix.py
+	test_cli_smoke.py
+local_ci.sh
+pyproject.toml
+.flake8
 ```
 
-Each tool is self-contained — no shared modules, no `requirements.txt`.
+## Environment & Commands
 
-## Running the Tools
+Use uv-managed Python and dependencies (Python 3.14):
 
 ```bash
-pip install mido send2trash   # only deps needed across all three
-python Clone-Hero-Midi-2-Chart/CloneHeroMidi2Chart.py
-python Clone-Hero-No-Part-Deleter/CloneHeroNoPartDeleter.py
-python Clone-Hero-Difficulty-Creator/CloneHeroDifficultyCreator.py
+uv venv --python 3.14
+uv sync
+uv sync --group dev
 ```
 
-- No CLI arguments — all tools are interactive (Tkinter GUI for folder selection).
-- On first run a folder picker dialog selects the Clone Hero songs directory.
-- Path is persisted in `CH_Settings.txt` (plain text, `#`-commented, first non-comment line = path).
-- Difficulty Creator shows a Listbox GUI to cherry-pick which songs to process.
-- All scripts end with `input("Press Enter to exit...")` — intentional, keeps the terminal open after double-clicking the `.exe`.
+Primary runtime usage:
 
-## Distribution
+```bash
+uv run ch-chart-fix.py /path/to/song-folder
+uv run ch-chart-fix.py /path/to/song.zip
+uv run ch-chart-fix.py --batch /path/to/songs-root
+uv run ch-chart-fix.py --dry-run /path/to/input
+```
 
-All three tools are packaged with **PyInstaller** into a single Windows `.exe`.
-Antivirus false positives (Windows Defender) are a known issue — not a bug.
+Validation:
 
-## File Formats
+```bash
+bash local_ci.sh
+bash local_ci.sh --fix
+```
 
-| Format | Role |
-|---|---|
-| `.mid` / `.midi` | Input to Midi2Chart; also checked by No Part Deleter |
-| `notes.chart` | Primary working format (plain text, sections like `[ExpertSingle]`) |
-| `CH_Settings.txt` | Shared config file — same format/location across all three tools |
-| `song.ini` | Used only as a song-folder marker, not parsed |
+Equivalent manual checks:
 
-The `.chart` format uses `tick = type value [length]` lines inside named sections:
-- `N` = note, `S 2` = Star Power, `B` = BPM, `TS` = time signature, `E` = event.
+```bash
+uv run black --check ch-chart-fix.py tests/
+uv run ruff check ch-chart-fix.py tests/
+uv run python -m flake8 ch-chart-fix.py tests/
+uv run pytest -v
+```
 
-## Key Conventions
+## Implementation Conventions
 
-- **ANSI color output:** `Colors` class (or raw `\033[…m` codes) — cyan = info, green = success, red = error/deletion, yellow = warning.
-- **UTF-8 with BOM tolerance:** All file reads use `utf-8-sig` encoding with `errors='ignore'`.
-- **`send2trash` for deletion:** Both Midi2Chart and No Part Deleter use `send2trash` (recoverable Recycle Bin), not `os.remove`. Note: No Part Deleter README incorrectly says "permanent" — the code is safe.
-- **No external parser for `.chart`:** Pure `re` regex throughout — no dedicated `.chart` library.
-- **HOPO threshold:** Replicates Moonscraper's formula: `(resolution × 170) / 480`.
-- **Windows-primary:** `ctypes.windll` for console title on Windows; ANSI escape fallback on Unix.
+- Keep UTF-8 with BOM tolerance on reads for charts (`utf-8-sig`, `errors='ignore'`).
+- Preserve `.chart` semantics:
+	- `N` notes, `S 2` star power, `B` BPM, `TS` time signature, `E` events.
+- Preserve downchart behavior:
+	- Hard: pass-through notes, keep force modifiers.
+	- Medium: 8th-note density cap, max 2-note chords, orange→purple remap.
+	- Easy: quarter-note density cap, single-note chords, fret >= 3 remap to yellow.
+- Avoid introducing GUI/stateful config flows (no Tkinter, no `CH_Settings.txt` in v0).
+- Prefer small, test-backed changes; add or update tests when behavior changes.
 
-## Known Issues / Gotchas
+## Known Agent Pitfalls
 
-- **Midi2Chart** `endswith('.mid')` check does not catch `.midi` — docs claim both are supported but code misses `.midi` in at least one path.
-- **Difficulty Creator** has `FORCE_REPLACE = True` hardcoded — always regenerates Hard/Medium/Easy, even if they already exist. The README mentions `.bak` backups but **no backup logic exists in the code**.
-- **No Part Deleter** `DRY_RUN = False` is hardcoded — edit source to enable safe preview mode.
-- **GHL parts excluded intentionally:** No Part Deleter's regex uses a negative lookahead for ` GHL`, so songs with only Guitar Hero Live 6-fret parts are treated as "no instrument" and deleted.
-- **Difficulty Creator only works on `.chart`** — must run Midi2Chart first if source is MIDI.
+- Do not use bare `uv run flake8 ...` on zsh setups that autocorrect command names; use:
+	- `uv run python -m flake8 ...`
+- Keep zip extraction safe:
+	- normalize paths
+	- reject traversal entries (`..`)
+	- keep wrapped vs flat extraction behavior intact
+- Do not reintroduce legacy multi-script assumptions from the original repos.
 
-## Instrument/Track Mapping (Midi2Chart)
+## Credit Origins
 
-| MIDI Track Name | `.chart` Section Key |
-|---|---|
-| PART GUITAR, T1 GEMS | `Single` |
-| PART BASS | `DoubleBass` |
-| PART RHYTHM | `DoubleRhythm` |
-| PART KEYS | `Keyboard` |
-| PART DRUMS | `Drums` |
+This project ports and consolidates logic from:
 
-MIDI note → lane mapping per difficulty (Expert: 96–100, Hard: 84–88, Medium: 72–76, Easy: 60–64). Open notes use 95/83/71/59.
+- https://github.com/lililwavezlilil/Clone-Hero-Midi-2-Chart
+- https://github.com/lililwavezlilil/Clone-Hero-No-Part-Deleter
+- https://github.com/lililwavezlilil/Clone-Hero-Difficulty-Creator
