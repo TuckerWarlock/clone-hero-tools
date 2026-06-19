@@ -6,6 +6,17 @@ generates the missing **Hard**, **Medium**, and **Easy** difficulties from it.
 Supports `.chart`, `.mid`/`.midi`, and `.zip` source inputs. Runs on **macOS / Linux /
 Windows** — no pre-compiled executable required.
 
+## Credits & Origins
+
+This project is based on the work by
+[lililwavezlilil](https://github.com/lililwavezlilil).
+
+Original repositories:
+
+- [Clone-Hero-Midi-2-Chart](https://github.com/lililwavezlilil/Clone-Hero-Midi-2-Chart)
+- [Clone-Hero-No-Part-Deleter](https://github.com/lililwavezlilil/Clone-Hero-No-Part-Deleter)
+- [Clone-Hero-Difficulty-Creator](https://github.com/lililwavezlilil/Clone-Hero-Difficulty-Creator)
+
 ---
 
 ## How it works
