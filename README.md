@@ -90,6 +90,28 @@ uv run ch-chart-fix.py --batch ~/Music/CloneHero/songs/
 Every sub-folder that looks like a song folder (contains `song.ini`,
 `notes.chart`, or a `.mid`) will be processed.
 
+### Scan duplicate song folders only
+
+```bash
+uv run ch-chart-fix.py --scan-duplicates --batch ~/Music/CloneHero/songs/
+```
+
+This mode only scans duplicate song folders. It does not convert MIDI files or
+generate lower difficulties.
+
+The duplicate scanner assumes duplicates live in the same directory. When two
+sibling song folders look like the same song, the tool compares them and prints
+the keep/skip decision.
+
+### Use `badsongs.txt` duplicate pairs
+
+```bash
+uv run ch-chart-fix.py --batch --badsongs ~/Documents/Clone\ Hero/PlayerData/badsongs.txt ~/Music/CloneHero/songs/
+```
+
+When `--badsongs` is provided, the tool also parses Clone Hero's duplicate pair
+report and uses those folder pairs during the pre-processing duplicate scan.
+
 ### Dry run — preview without writing
 
 ```bash
@@ -100,13 +122,15 @@ uv run ch-chart-fix.py --batch --dry-run ~/Music/CloneHero/songs/
 ### All options
 
 ```
-usage: ch-chart-fix [-h] [--batch] [--dry-run] path
+usage: ch-chart-fix [-h] [--batch] [--scan-duplicates] [--badsongs BADSONGS] [--dry-run] path
 
 positional arguments:
   path        Song folder, or root directory when --batch is set
 
 options:
   --batch     Process all song folders found under <path>
+  --scan-duplicates  Scan duplicate song folders only; do not convert or downchart
+  --badsongs  Path to Clone Hero badsongs.txt for duplicate pair comparisons
   --dry-run   Show what would be done without writing any files
   -h, --help  Show this help message and exit
 ```
@@ -154,7 +178,7 @@ The pipeline runs:
 | Format | Black   | Consistent code style (88-char lines) |
 | Lint   | Ruff    | pyflakes, pycodestyle, isort, pyupgrade |
 | Lint   | Flake8  | Belt-and-suspenders pass for anything Ruff misses |
-| Tests  | Pytest  | 26 unit + smoke tests |
+| Tests  | Pytest  | Automated unit and smoke tests |
 
 ### Install dev dependencies
 

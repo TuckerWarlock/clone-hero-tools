@@ -51,6 +51,31 @@ def _make_expert_chart(path: Path) -> None:
     path.write_text(chart, encoding="utf-8")
 
 
+def _make_song_dir(
+    root: Path,
+    name: str,
+    *,
+    preview: bool = False,
+    chart_path_name: str = "notes.chart",
+) -> Path:
+    song_dir = root / name
+    song_dir.mkdir()
+    _make_expert_chart(song_dir / chart_path_name)
+    ini_lines = [
+        "[song]",
+        "name = Sleeping Giant",
+        "artist = Mastodon",
+        "charter = Neversoft",
+    ]
+    if preview:
+        ini_lines.append("preview_start_time = 12345")
+        (song_dir / "preview.mp3").write_bytes(b"preview")
+    (song_dir / "song.ini").write_text("\n".join(ini_lines) + "\n", encoding="utf-8")
+    (song_dir / "song.mp3").write_bytes(b"song")
+    (song_dir / "guitar.mp3").write_bytes(b"guitar")
+    return song_dir
+
+
 def test_expert_chart_generates_lower_difficulties(tmp_path: Path) -> None:
     song_dir = tmp_path / "song"
     song_dir.mkdir()
@@ -121,3 +146,74 @@ def test_zip_input_generates_lower_difficulties(tmp_path: Path) -> None:
     content = extracted_chart.read_text(encoding="utf-8", errors="ignore")
     for diff in ("Expert", "Hard", "Medium", "Easy"):
         assert f"[{diff}Single]" in content
+
+
+def test_batch_process_does_not_run_duplicate_scan_by_default(tmp_path: Path) -> None:
+    duplicate_root = tmp_path / "downloaded"
+    duplicate_root.mkdir()
+
+    preferred = _make_song_dir(
+        duplicate_root, "Mastodon - Sleeping Giant", preview=True
+    )
+    skipped = _make_song_dir(duplicate_root, "Mastodon - Sleeping Giant (Neversoft)")
+
+    result = subprocess.run(
+        [sys.executable, str(_script_path()), "--batch", str(duplicate_root)],
+        cwd=_repo_root(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+
+    preferred_content = (preferred / "notes.chart").read_text(
+        encoding="utf-8", errors="ignore"
+    )
+    skipped_content = (skipped / "notes.chart").read_text(
+        encoding="utf-8", errors="ignore"
+    )
+
+    assert "[HardSingle]" in preferred_content
+    assert "[HardSingle]" in skipped_content
+
+
+def test_scan_duplicates_batch_reports_without_processing(tmp_path: Path) -> None:
+    duplicate_root = tmp_path / "downloaded"
+    duplicate_root.mkdir()
+
+    preferred = _make_song_dir(
+        duplicate_root, "Mastodon - Sleeping Giant", preview=True
+    )
+    skipped = _make_song_dir(duplicate_root, "Mastodon - Sleeping Giant (Neversoft)")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_script_path()),
+            "--scan-duplicates",
+            "--batch",
+            str(duplicate_root),
+        ],
+        cwd=_repo_root(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "Duplicate scan" in result.stdout
+    assert (
+        "Keep Mastodon - Sleeping Giant; skip Mastodon - Sleeping Giant (Neversoft)"
+        in result.stdout
+    )
+
+    preferred_content = (preferred / "notes.chart").read_text(
+        encoding="utf-8", errors="ignore"
+    )
+    skipped_content = (skipped / "notes.chart").read_text(
+        encoding="utf-8", errors="ignore"
+    )
+
+    assert "[HardSingle]" not in preferred_content
+    assert "[HardSingle]" not in skipped_content

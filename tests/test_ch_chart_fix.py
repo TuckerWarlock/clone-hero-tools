@@ -389,3 +389,188 @@ class TestExtractZip:
         content = (tmp_path / "My Song" / "notes.chart").read_text(encoding="utf-8")
         for diff in ("Expert", "Hard", "Medium", "Easy"):
             assert f"[{diff}Single]" in content
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tests — Duplicate detection & community-chart preference
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_song_folder(
+    root,
+    name: str,
+    chart_text: str,
+    *,
+    preview: bool = False,
+    album_ext: str = ".png",
+    audio_ext: str = ".mp3",
+    metadata_lines: list[str] | None = None,
+    song_name: str = "Test Song",
+    artist: str = "Test Artist",
+):
+    folder = root / name
+    folder.mkdir()
+    (folder / "notes.chart").write_text(chart_text, encoding="utf-8")
+
+    ini_lines = ["[song]", f"name = {song_name}", f"artist = {artist}"]
+    if metadata_lines:
+        ini_lines.extend(metadata_lines)
+    (folder / "song.ini").write_text("\n".join(ini_lines) + "\n", encoding="utf-8")
+
+    (folder / f"song{audio_ext}").write_bytes(b"a" * 1024)
+    (folder / f"guitar{audio_ext}").write_bytes(b"b" * 1024)
+    if preview:
+        (folder / f"preview{audio_ext}").write_bytes(b"c" * 512)
+    (folder / f"album{album_ext}").write_bytes(b"cover")
+    return folder
+
+
+class TestDuplicateDetection:
+    def test_count_notes_in_chart(self, tmp_path):
+        """Count notes in a simple chart."""
+        chart = _minimal_chart("  0 = N 0 0\n  192 = N 1 0\n  384 = N 2 0")
+        path = tmp_path / "notes.chart"
+        path.write_text(chart, encoding="utf-8")
+
+        count = ch._count_notes_in_chart(str(path))
+        assert count == 3
+
+    def test_identical_chart_prefers_better_assets(self, tmp_path):
+        """If chart hashes match, keep the folder with better assets/metadata."""
+        chart_text = _minimal_chart("  0 = N 0 0\n  192 = N 1 0")
+        plain = _make_song_folder(
+            tmp_path,
+            "Mastodon - Sleeping Giant",
+            chart_text,
+            preview=True,
+            metadata_lines=[
+                "album = Blood Mountain",
+                "year = 2006",
+                "genre = Metal",
+                "charter = Neversoft",
+                "icon = gh3dlc",
+                "unlock_id = gh3_dlc07",
+            ],
+        )
+        duplicate = _make_song_folder(
+            tmp_path,
+            "Mastodon - Sleeping Giant (Neversoft)",
+            chart_text,
+            preview=False,
+            album_ext=".jpg",
+            audio_ext=".opus",
+            metadata_lines=["charter = Neversoft"],
+        )
+
+        result = ch.compare_duplicate_song_folders(str(plain), str(duplicate))
+
+        assert result["preferred"] == str(plain)
+        assert result["other"] == str(duplicate)
+        assert result["reason"] == "identical-chart-better-assets"
+        assert result["identical_chart"] is True
+
+    def test_non_identical_chart_prefers_higher_complexity(self, tmp_path):
+        """If charts differ, keep the more complex chart before asset tiebreaks."""
+        simple = _make_song_folder(
+            tmp_path,
+            "simple",
+            _minimal_chart("  0 = N 0 0"),
+            preview=True,
+        )
+        complex_song = _make_song_folder(
+            tmp_path,
+            "complex",
+            _minimal_chart("  0 = N 0 0\n  192 = N 1 0\n  384 = N 2 0\n  576 = N 3 0"),
+            preview=False,
+        )
+
+        result = ch.compare_duplicate_song_folders(str(simple), str(complex_song))
+
+        assert result["preferred"] == str(complex_song)
+        assert result["other"] == str(simple)
+        assert result["reason"] == "higher-chart-complexity"
+        assert result["identical_chart"] is False
+
+    def test_true_tie_requires_manual_review(self, tmp_path):
+        """If charts and assets tie, the duplicate should stay unresolved."""
+        chart_text = _minimal_chart("  0 = N 0 0\n  192 = N 1 0")
+        folder_a = _make_song_folder(tmp_path, "a", chart_text)
+        folder_b = _make_song_folder(tmp_path, "b", chart_text)
+
+        result = ch.compare_duplicate_song_folders(str(folder_a), str(folder_b))
+
+        assert result["preferred"] is None
+        assert result["other"] is None
+        assert result["reason"] == "manual-review"
+        assert result["identical_chart"] is True
+
+    def test_find_duplicate_song_groups_only_within_same_parent(self, tmp_path):
+        """Sibling duplicates are grouped together, but not across parents."""
+        chart_text = _minimal_chart("  0 = N 0 0")
+        downloaded = tmp_path / "downloaded"
+        downloaded.mkdir()
+        pack = tmp_path / "pack"
+        pack.mkdir()
+
+        _make_song_folder(
+            downloaded,
+            "Mastodon - Sleeping Giant",
+            chart_text,
+            song_name="Sleeping Giant",
+            artist="Mastodon",
+        )
+        _make_song_folder(
+            downloaded,
+            "Mastodon - Sleeping Giant (Neversoft)",
+            chart_text,
+            song_name="Sleeping Giant",
+            artist="Mastodon",
+        )
+        _make_song_folder(
+            pack,
+            "Mastodon - Sleeping Giant",
+            chart_text,
+            song_name="Sleeping Giant",
+            artist="Mastodon",
+        )
+
+        groups = ch.find_duplicate_song_groups(str(tmp_path))
+
+        assert len(groups) == 1
+        assert len(groups[0]) == 2
+        assert all("downloaded" in path for path in groups[0])
+
+    def test_parse_badsongs_duplicate_pairs(self, tmp_path):
+        """The badsongs parser extracts duplicate pairs, including names with parentheses."""
+        badsongs = tmp_path / "badsongs.txt"
+        badsongs.write_text(
+            "\n".join(
+                [
+                    "Warning: ignored section",
+                    ch._BADSONGS_DUPLICATE_HEADER,
+                    (
+                        "/songs/Mastodon - Sleeping Giant "
+                        "(/songs/Mastodon - Sleeping Giant (Neversoft))"
+                    ),
+                    (
+                        "/songs/Sikth - Cracks of Light (feat. Spencer Sotelo) "
+                        "(Chezy) (/songs/Sikth - Cracks of Light "
+                        "(feat. Spencer Sotelo))"
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        pairs = ch.parse_badsongs_duplicate_pairs(str(badsongs))
+
+        assert pairs == [
+            (
+                "/songs/Mastodon - Sleeping Giant",
+                "/songs/Mastodon - Sleeping Giant (Neversoft)",
+            ),
+            (
+                "/songs/Sikth - Cracks of Light (feat. Spencer Sotelo) (Chezy)",
+                "/songs/Sikth - Cracks of Light (feat. Spencer Sotelo)",
+            ),
+        ]

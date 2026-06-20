@@ -24,6 +24,7 @@ Dependencies:
 """
 
 import argparse
+import hashlib
 import os
 import re
 import sys
@@ -590,6 +591,404 @@ def add_difficulties(chart_path: str, force_replace: bool = True) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  PART 3A — Duplicate detection & community-chart preference
+# ═══════════════════════════════════════════════════════════════════
+
+
+_AUDIO_EXTENSIONS = {".mp3", ".ogg", ".opus", ".wav", ".flac", ".m4a"}
+_SONG_INI_PREFERENCE_KEYS = {
+    "album",
+    "charter",
+    "genre",
+    "icon",
+    "playlist_track",
+    "preview_start_time",
+    "tags",
+    "unlock_id",
+    "year",
+}
+_BADSONGS_DUPLICATE_HEADER = (
+    "ERROR: These folders contain charts that another song has (duplicate charts)!"
+)
+
+
+def _count_notes_in_chart(chart_path: str) -> int:
+    """Count total playable notes in a chart file (all difficulties)."""
+    try:
+        with open(chart_path, encoding="utf-8-sig", errors="ignore") as f:
+            content = f.read()
+        # Count all N (note) lines
+        return len(re.findall(r"^\s*\d+\s*=\s*N\s+\d+\s+\d+", content, re.MULTILINE))
+    except Exception:
+        return 0
+
+
+def _hash_file(path: str) -> str | None:
+    """Return the SHA-1 hash for a file, or None if unreadable."""
+    try:
+        digest = hashlib.sha1()
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _count_notes_in_midi(midi_path: str) -> int:
+    """Count note-on events in a MIDI file as a simple complexity proxy."""
+    try:
+        import mido
+
+        mid = mido.MidiFile(midi_path, clip=True, charset="utf-8")
+    except Exception:
+        return 0
+
+    note_count = 0
+    for track in mid.tracks:
+        for msg in track:
+            if (
+                getattr(msg, "type", None) == "note_on"
+                and getattr(msg, "velocity", 0) > 0
+            ):
+                note_count += 1
+    return note_count
+
+
+def _count_chart_complexity(chart_path: str) -> int:
+    """Count chart complexity for either .chart or MIDI chart sources."""
+    lower = chart_path.lower()
+    if lower.endswith(".chart"):
+        return _count_notes_in_chart(chart_path)
+    if lower.endswith((".mid", ".midi")):
+        return _count_notes_in_midi(chart_path)
+    return 0
+
+
+def _find_primary_chart_source(folder: str) -> str | None:
+    """Return the main chart source for a song folder."""
+    chart_path = _find_chart(folder)
+    if chart_path:
+        return chart_path
+    return _find_midi(folder)
+
+
+def _song_ini_metadata_score(folder: str) -> int:
+    """Score song.ini richness using a small set of high-signal keys."""
+    ini_path = os.path.join(folder, "song.ini")
+    if not os.path.isfile(ini_path):
+        return 0
+
+    score = 0
+    try:
+        with open(ini_path, encoding="utf-8-sig", errors="ignore") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("[") or "=" not in line:
+                    continue
+                key, value = [part.strip().lower() for part in line.split("=", 1)]
+                if key in _SONG_INI_PREFERENCE_KEYS and value:
+                    score += 1
+    except OSError:
+        return 0
+    return score
+
+
+def _song_identity(folder: str) -> str | None:
+    """Return a normalized song identity from song.ini when available."""
+    ini_path = os.path.join(folder, "song.ini")
+    if not os.path.isfile(ini_path):
+        return None
+
+    artist = None
+    name = None
+    try:
+        with open(ini_path, encoding="utf-8-sig", errors="ignore") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("[") or "=" not in line:
+                    continue
+                key, value = [part.strip() for part in line.split("=", 1)]
+                key = key.lower()
+                if key == "artist" and value:
+                    artist = value.lower()
+                elif key == "name" and value:
+                    name = value.lower()
+    except OSError:
+        return None
+
+    if artist and name:
+        return f"{artist} - {name}"
+    if name:
+        return name
+    return None
+
+
+def _normalized_duplicate_name(name: str) -> str:
+    """Normalize folder names while stripping trailing qualifier tags."""
+    normalized = re.sub(r"\s+", " ", name.strip().lower())
+    while True:
+        stripped = re.sub(r"\s+\([^()]+\)$", "", normalized).strip()
+        if stripped == normalized:
+            return normalized
+        normalized = stripped
+
+
+def _duplicate_group_key(folder: str) -> str:
+    """Return the key used to group likely duplicate song folders."""
+    identity = _song_identity(folder)
+    if identity:
+        return re.sub(r"\s+", " ", identity).strip()
+    return _normalized_duplicate_name(os.path.basename(folder))
+
+
+def _song_asset_score(folder: str) -> tuple[int, int, int, int, int]:
+    """Return a tuple that prefers more complete song packages."""
+    preview_count = 0
+    album_count = 0
+    audio_stems = set()
+    audio_bytes = 0
+
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return (0, 0, 0, 0, 0)
+
+    for name in names:
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue
+
+        lower = name.lower()
+        stem, ext = os.path.splitext(lower)
+
+        if stem == "preview" and ext in _AUDIO_EXTENSIONS:
+            preview_count += 1
+        if stem == "album" and ext in {".png", ".jpg", ".jpeg", ".webp"}:
+            album_count += 1
+        if ext in _AUDIO_EXTENSIONS:
+            audio_stems.add(stem)
+            try:
+                audio_bytes += os.path.getsize(path)
+            except OSError:
+                pass
+
+    metadata_score = _song_ini_metadata_score(folder)
+    return (preview_count, len(audio_stems), metadata_score, album_count, audio_bytes)
+
+
+def compare_duplicate_song_folders(folder_a: str, folder_b: str) -> dict[str, object]:
+    """
+    Compare two duplicate song folders and decide which one to keep.
+
+    Resolution order:
+      1. If chart hashes match, prefer the more complete asset package.
+      2. Otherwise prefer the chart with higher complexity.
+      3. If complexity ties, prefer the more complete asset package.
+      4. If still tied, require manual review.
+    """
+    folder_a = os.path.realpath(folder_a)
+    folder_b = os.path.realpath(folder_b)
+
+    chart_a = _find_primary_chart_source(folder_a)
+    chart_b = _find_primary_chart_source(folder_b)
+
+    result = {
+        "preferred": None,
+        "other": None,
+        "reason": "manual-review",
+        "identical_chart": False,
+    }
+
+    if not chart_a or not chart_b:
+        return result
+
+    hash_a = _hash_file(chart_a)
+    hash_b = _hash_file(chart_b)
+    assets_a = _song_asset_score(folder_a)
+    assets_b = _song_asset_score(folder_b)
+
+    if hash_a and hash_b and hash_a == hash_b:
+        result["identical_chart"] = True
+        if assets_a > assets_b:
+            result["preferred"] = folder_a
+            result["other"] = folder_b
+            result["reason"] = "identical-chart-better-assets"
+        elif assets_b > assets_a:
+            result["preferred"] = folder_b
+            result["other"] = folder_a
+            result["reason"] = "identical-chart-better-assets"
+        return result
+
+    complexity_a = _count_chart_complexity(chart_a)
+    complexity_b = _count_chart_complexity(chart_b)
+    if complexity_a > complexity_b:
+        result["preferred"] = folder_a
+        result["other"] = folder_b
+        result["reason"] = "higher-chart-complexity"
+        return result
+    if complexity_b > complexity_a:
+        result["preferred"] = folder_b
+        result["other"] = folder_a
+        result["reason"] = "higher-chart-complexity"
+        return result
+
+    if assets_a > assets_b:
+        result["preferred"] = folder_a
+        result["other"] = folder_b
+        result["reason"] = "better-assets"
+    elif assets_b > assets_a:
+        result["preferred"] = folder_b
+        result["other"] = folder_a
+        result["reason"] = "better-assets"
+    return result
+
+
+def _normalize_input_path(path: str) -> str:
+    """Normalize a user-supplied path without inventing a realpath for missing files."""
+    normalized = os.path.expanduser(path.strip().strip('"'))
+    if os.path.exists(normalized):
+        return os.path.realpath(normalized)
+    return normalized
+
+
+def parse_badsongs_duplicate_pairs(badsongs_path: str) -> list[tuple[str, str]]:
+    """Parse duplicate folder pairs from Clone Hero's badsongs.txt output."""
+    pairs = []
+    in_duplicate_section = False
+
+    with open(badsongs_path, encoding="utf-8-sig", errors="ignore") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line == _BADSONGS_DUPLICATE_HEADER:
+                in_duplicate_section = True
+                continue
+            if not in_duplicate_section:
+                continue
+            if line.startswith(("ERROR:", "Warning:")):
+                break
+
+            match = re.match(
+                r"^(?P<left>.+) \((?P<right>(?:[A-Za-z]:\\|/|~).+)\)$", line
+            )
+            if not match:
+                continue
+            left = _normalize_input_path(match.group("left"))
+            right = _normalize_input_path(match.group("right"))
+            pairs.append((left, right))
+
+    return pairs
+
+
+def find_duplicate_song_groups(root_dir: str) -> list[list[str]]:
+    """Find duplicate song folders, assuming duplicates live in the same directory."""
+    groups = defaultdict(list)
+    root_dir = os.path.realpath(root_dir)
+
+    for dirpath, dirnames, _filenames in os.walk(root_dir):
+        if not _is_song_folder(dirpath):
+            continue
+        dirnames[:] = []
+        folder = os.path.realpath(dirpath)
+        parent = os.path.realpath(os.path.dirname(folder))
+        groups[(parent, _duplicate_group_key(folder))].append(folder)
+
+    return [sorted(group) for group in groups.values() if len(group) > 1]
+
+
+def evaluate_duplicate_pairs(
+    folder_pairs: list[tuple[str, str]],
+) -> tuple[dict[str, str], int]:
+    """Compare duplicate pairs and return loser->winner skip mapping plus unresolved count."""
+    skip_map = {}
+    unresolved = 0
+    seen = set()
+
+    for folder_a, folder_b in folder_pairs:
+        pair_key = tuple(sorted((folder_a, folder_b)))
+        if pair_key in seen:
+            continue
+        seen.add(pair_key)
+
+        if not (os.path.isdir(folder_a) and os.path.isdir(folder_b)):
+            warn(
+                "  Duplicate pair references a missing folder; skipping comparison: "
+                f"{folder_a} | {folder_b}"
+            )
+            unresolved += 1
+            continue
+
+        result = compare_duplicate_song_folders(folder_a, folder_b)
+        if result["preferred"] and result["other"]:
+            keep_path = os.path.realpath(result["preferred"])
+            remove_path = os.path.realpath(result["other"])
+            skip_map[remove_path] = keep_path
+            ok(
+                f"  Keep {os.path.basename(keep_path)}; skip {os.path.basename(remove_path)} "
+                f"({result['reason']})"
+            )
+        else:
+            unresolved += 1
+            warn(
+                "  Manual review required: "
+                f"{os.path.basename(folder_a)} | {os.path.basename(folder_b)}"
+            )
+
+    return skip_map, unresolved
+
+
+def scan_duplicate_song_folders(
+    root_dir: str, badsongs_path: str | None = None
+) -> tuple[dict[str, str], int]:
+    """Scan duplicate song folders before any chart processing begins."""
+    skip_map = {}
+    unresolved = 0
+
+    section("Duplicate scan")
+
+    groups = find_duplicate_song_groups(root_dir)
+    if groups:
+        info(f"Scanning {len(groups)} same-directory duplicate group(s) …")
+        pair_groups = []
+        for group in groups:
+            if len(group) == 2:
+                pair_groups.append((group[0], group[1]))
+            else:
+                unresolved += 1
+                warn(
+                    "  Manual review required for multi-folder duplicate group: "
+                    + ", ".join(os.path.basename(path) for path in group)
+                )
+        local_skip_map, local_unresolved = evaluate_duplicate_pairs(pair_groups)
+        skip_map.update(local_skip_map)
+        unresolved += local_unresolved
+    else:
+        info("No same-directory duplicate groups found.")
+
+    if badsongs_path:
+        info(f"Scanning badsongs duplicate pairs from {badsongs_path} …")
+        badsongs_pairs = parse_badsongs_duplicate_pairs(badsongs_path)
+        if not badsongs_pairs:
+            warn("  No duplicate pairs found in badsongs.txt input.")
+        badsongs_skip_map, badsongs_unresolved = evaluate_duplicate_pairs(
+            badsongs_pairs
+        )
+        skip_map.update(badsongs_skip_map)
+        unresolved += badsongs_unresolved
+
+    info(
+        f"Duplicate scan complete: {len(skip_map)} skip decision(s), "
+        f"{unresolved} unresolved pair/group(s)."
+    )
+    return skip_map, unresolved
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  PART 3 — Song folder processing pipeline
 # ═══════════════════════════════════════════════════════════════════
 
@@ -636,7 +1035,7 @@ def process_song_folder(folder: str, dry_run: bool = False) -> bool:
 
     info(f"Processing: {song_name}")
 
-    # Step 1 — MIDI conversion if needed
+    # Step 1 — MIDI conversion if needed (only if no chart yet)
     if not chart_path:
         if not midi_path:
             err("No notes.chart or MIDI file found in this folder.")
@@ -814,6 +1213,14 @@ Examples:
   # Batch — process every song under a root directory
   python ch-chart-fix.py --batch ~/Music/CloneHero/songs/
 
+    # Scan duplicate song folders only
+    python ch-chart-fix.py --scan-duplicates --batch \
+        ~/Music/CloneHero/songs/
+
+    # Scan duplicates using Clone Hero badsongs.txt pairs
+    python ch-chart-fix.py --scan-duplicates --badsongs \
+        ~/Documents/badsongs.txt ~/Music/CloneHero/songs/
+
   # Dry run — show what would happen without writing any files
   python ch-chart-fix.py --dry-run ~/Downloads/some-song.zip
   python ch-chart-fix.py --batch --dry-run ~/Music/CloneHero/songs/
@@ -826,6 +1233,15 @@ Examples:
         "--batch", action="store_true", help="Process all song folders under <path>"
     )
     parser.add_argument(
+        "--scan-duplicates",
+        action="store_true",
+        help="Scan duplicate song folders only; do not convert or downchart",
+    )
+    parser.add_argument(
+        "--badsongs",
+        help="Path to Clone Hero badsongs.txt for duplicate pair comparisons",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be done without writing files",
@@ -836,11 +1252,15 @@ Examples:
     if args.dry_run:
         warn("DRY RUN — no files will be written.\n")
 
+    if args.badsongs and not args.scan_duplicates:
+        err("--badsongs can only be used with --scan-duplicates.")
+        sys.exit(1)
+
     path = args.path
 
     # Transparently handle .zip input
     if path.lower().endswith(".zip"):
-        if args.batch:
+        if args.batch or args.scan_duplicates:
             err("--batch cannot be used with a .zip file.")
             sys.exit(1)
         section(f"ZIP input: {path}")
@@ -848,6 +1268,18 @@ Examples:
         path = extract_zip(path, dry_run=args.dry_run)
         if path is None:
             sys.exit(1)
+
+    if args.scan_duplicates:
+        if args.batch:
+            scan_root = path
+        else:
+            real_path = os.path.realpath(path)
+            if os.path.isdir(real_path) and _is_song_folder(real_path):
+                scan_root = os.path.dirname(real_path)
+            else:
+                scan_root = real_path
+        scan_duplicate_song_folders(scan_root, badsongs_path=args.badsongs)
+        sys.exit(0)
 
     if args.batch:
         batch_process(path, dry_run=args.dry_run)
