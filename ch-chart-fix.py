@@ -1083,6 +1083,28 @@ def scan_no_part_song_folders(root_dir: str) -> tuple[list[str], int]:
     return matches, scanned
 
 
+def _delete_song_folder(folder: str, dry_run: bool = False) -> bool:
+    """Delete a song folder and report the action."""
+    folder = os.path.realpath(folder)
+    if not os.path.isdir(folder):
+        warn(f"  Skipping missing folder: {folder}")
+        return False
+
+    if dry_run:
+        warn(f"  [DRY RUN] Would delete: {folder}")
+        return True
+
+    try:
+        import shutil
+
+        shutil.rmtree(folder)
+        ok(f"  Deleted: {folder}")
+        return True
+    except OSError as exc:
+        err(f"  Failed to delete {folder}: {exc}")
+        return False
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  PART 3 — Song folder processing pipeline
 # ═══════════════════════════════════════════════════════════════════
@@ -1312,12 +1334,19 @@ Examples:
     python ch-chart-fix.py --scan-duplicates --batch \
         ~/Music/CloneHero/songs/
 
+    # Scan duplicate song folders and delete the lower-priority copies
+    python ch-chart-fix.py --scan-duplicates --delete --batch \
+        ~/Music/CloneHero/songs/
+
     # Scan duplicates using Clone Hero badsongs.txt pairs
     python ch-chart-fix.py --scan-duplicates --badsongs \
         ~/Documents/badsongs.txt ~/Music/CloneHero/songs/
 
     # Scan for song folders with no playable instruments
     python ch-chart-fix.py --scan-no-parts --batch ~/Music/CloneHero/songs/
+
+    # Scan for no-part folders and delete them
+    python ch-chart-fix.py --scan-no-parts --delete --batch ~/Music/CloneHero/songs/
 
   # Dry run — show what would happen without writing any files
   python ch-chart-fix.py --dry-run ~/Downloads/some-song.zip
@@ -1341,6 +1370,11 @@ Examples:
         help="Scan song folders with no playable instruments; do not convert or downchart",
     )
     parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="Delete folders selected by a scan mode",
+    )
+    parser.add_argument(
         "--badsongs",
         help="Path to Clone Hero badsongs.txt for duplicate pair comparisons",
     )
@@ -1357,6 +1391,10 @@ Examples:
 
     if args.scan_duplicates and args.scan_no_parts:
         err("Use only one scan mode at a time.")
+        sys.exit(1)
+
+    if args.delete and not (args.scan_duplicates or args.scan_no_parts):
+        err("--delete can only be used with --scan-duplicates or --scan-no-parts.")
         sys.exit(1)
 
     if args.badsongs and not args.scan_duplicates:
@@ -1385,7 +1423,13 @@ Examples:
                 scan_root = os.path.dirname(real_path)
             else:
                 scan_root = real_path
-        scan_duplicate_song_folders(scan_root, badsongs_path=args.badsongs)
+        skip_map, _unresolved = scan_duplicate_song_folders(
+            scan_root, badsongs_path=args.badsongs
+        )
+        if args.delete:
+            info("Deleting duplicate losers …")
+            for loser_path in sorted(skip_map):
+                _delete_song_folder(loser_path, dry_run=args.dry_run)
         sys.exit(0)
 
     if args.scan_no_parts:
@@ -1397,7 +1441,11 @@ Examples:
                 scan_root = os.path.dirname(real_path)
             else:
                 scan_root = real_path
-        scan_no_part_song_folders(scan_root)
+        no_part_folders, _scanned = scan_no_part_song_folders(scan_root)
+        if args.delete:
+            info("Deleting no-part folders …")
+            for folder in no_part_folders:
+                _delete_song_folder(folder, dry_run=args.dry_run)
         sys.exit(0)
 
     if args.batch:

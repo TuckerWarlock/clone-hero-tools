@@ -219,6 +219,35 @@ def test_scan_duplicates_batch_reports_without_processing(tmp_path: Path) -> Non
     assert "[HardSingle]" not in skipped_content
 
 
+def test_scan_duplicates_delete_removes_loser(tmp_path: Path) -> None:
+    root = tmp_path / "songs"
+    root.mkdir()
+
+    keeper = _make_song_dir(root, "Mastodon - Sleeping Giant", preview=True)
+    loser = _make_song_dir(root, "Mastodon - Sleeping Giant (Neversoft)")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_script_path()),
+            "--scan-duplicates",
+            "--delete",
+            "--batch",
+            str(root),
+        ],
+        cwd=_repo_root(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert not loser.exists()
+    assert keeper.exists()
+    assert "Deleting duplicate losers" in result.stdout
+    assert "Deleted:" in result.stdout
+
+
 def test_scan_no_parts_batch_reports_without_processing(tmp_path: Path) -> None:
     root = tmp_path / "songs"
     root.mkdir()
@@ -258,3 +287,36 @@ def test_scan_no_parts_batch_reports_without_processing(tmp_path: Path) -> None:
     assert "No required instruments:" in result.stdout
     assert "bad" in result.stdout
     assert "[HardSingle]" not in (bad / "notes.chart").read_text(encoding="utf-8")
+
+
+def test_scan_no_parts_delete_removes_folder(tmp_path: Path) -> None:
+    root = tmp_path / "songs"
+    root.mkdir()
+
+    bad = root / "bad"
+    bad.mkdir()
+    (bad / "song.ini").write_text(
+        "[song]\nname = Bad\nartist = Test\n",
+        encoding="utf-8",
+    )
+    (bad / "notes.chart").write_text("[Events]\n{\n}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_script_path()),
+            "--scan-no-parts",
+            "--delete",
+            "--batch",
+            str(root),
+        ],
+        cwd=_repo_root(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert not bad.exists()
+    assert "Deleting no-part folders" in result.stdout
+    assert "Deleted:" in result.stdout
