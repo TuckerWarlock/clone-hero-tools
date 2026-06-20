@@ -511,6 +511,32 @@ def _downchart_notes(notes_data: str, difficulty: str, resolution: int) -> str:
         accepted_ticks[tick].append(color)
         new_lines.append(f"  {tick} = N {color} {length}")
 
+    # Medium/Easy can generate lane-collisions after fret remaps (e.g. 4 -> 3)
+    # where a sustain overlaps the next note on the same lane. Trim those tails
+    # so the chart remains playable.
+    if difficulty in {"Medium", "Easy"}:
+        lane_events = {}
+        for idx, line in enumerate(new_lines):
+            m = re.match(r"^\s*(\d+)\s*=\s*N\s+(\d+)\s+(\d+)", line)
+            if not m:
+                continue
+            tick = int(m.group(1))
+            lane = int(m.group(2))
+            length = int(m.group(3))
+            # Only trim playable lanes/open notes; modifiers are already stripped.
+            if lane <= 4 or lane == 7:
+                lane_events.setdefault(lane, []).append([idx, tick, length])
+
+        for lane, events in lane_events.items():
+            events.sort(key=lambda e: e[1])
+            for i in range(len(events) - 1):
+                idx, tick, length = events[i]
+                next_tick = events[i + 1][1]
+                max_len = max(0, next_tick - tick)
+                if length > max_len:
+                    events[i][2] = max_len
+                    new_lines[idx] = f"  {tick} = N {lane} {max_len}"
+
     return "\n".join(new_lines)
 
 

@@ -192,6 +192,17 @@ class TestDownchartNotes:
         same_tick = [fret for tick, fret in result if tick == 0]
         assert len(same_tick) == 2
 
+    def test_medium_trims_overlap_after_orange_to_purple_remap(self):
+        """Orange sustain remapped to lane 3 must not overlap the next lane-3 note."""
+        # Tick 0 has lane-4 sustain (orange) plus another lane in chord.
+        # On Medium, lane 4 -> lane 3. Next lane-3 note appears at tick 96,
+        # so sustain must be trimmed to <= 96.
+        notes = "  0 = N 4 192\n  0 = N 1 0\n  96 = N 3 0"
+        result_raw = ch._downchart_notes(notes, "Medium", self.RES)
+        m = re.search(r"^\s*0\s*=\s*N\s+3\s+(\d+)", result_raw, re.MULTILINE)
+        assert m is not None
+        assert int(m.group(1)) <= 96
+
     def test_hard_passes_through_all_notes(self):
         """Hard applies no speed thinning or chord limits."""
         notes = "  0 = N 0 0\n  0 = N 1 0\n  0 = N 2 0\n  48 = N 3 0"
