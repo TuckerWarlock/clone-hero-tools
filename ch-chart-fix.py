@@ -610,6 +610,20 @@ _SONG_INI_PREFERENCE_KEYS = {
 _BADSONGS_DUPLICATE_HEADER = (
     "ERROR: These folders contain charts that another song has (duplicate charts)!"
 )
+_CHART_INSTRUMENT_SECTION_MARKERS = (
+    "[Single]",
+    "[DoubleGuitar]",
+    "[DoubleBass]",
+    "[DoubleRhythm]",
+    "[Keyboard]",
+)
+_MIDI_REQUIRED_TRACK_PATTERNS = (
+    re.compile(r"\bPART GUITAR\b"),
+    re.compile(r"\bPART BASS\b"),
+    re.compile(r"\bPART RHYTHM\b"),
+    re.compile(r"\bPART KEYS\b"),
+    re.compile(r"\bT1 GEMS\b"),
+)
 
 
 def _count_notes_in_chart(chart_path: str) -> int:
@@ -988,6 +1002,87 @@ def scan_duplicate_song_folders(
     return skip_map, unresolved
 
 
+def _chart_has_required_instruments(chart_path: str) -> bool:
+    """Return True when a .chart file contains at least one required instrument section."""
+    try:
+        with open(chart_path, encoding="utf-8-sig", errors="ignore") as f:
+            content = f.read()
+    except OSError:
+        return False
+
+    upper_content = content.upper()
+    upper_markers = map(str.upper, _CHART_INSTRUMENT_SECTION_MARKERS)
+    return any(marker in upper_content for marker in upper_markers)
+
+
+def _midi_has_required_instruments(midi_path: str) -> bool:
+    """Return True when a MIDI file contains at least one required instrument track."""
+    try:
+        import mido
+
+        mid = mido.MidiFile(midi_path, clip=True, charset="utf-8")
+    except Exception:
+        return False
+
+    for track in mid.tracks:
+        track_name = ""
+        for msg in track:
+            if getattr(msg, "type", None) == "track_name":
+                track_name = str(msg.name).upper().strip()
+                break
+        if not track_name:
+            continue
+        if any(kw in track_name for kw in ("GHL", "VOCAL", "HARM", "REAL")):
+            continue
+        if any(pattern.search(track_name) for pattern in _MIDI_REQUIRED_TRACK_PATTERNS):
+            return True
+
+    return False
+
+
+def has_required_instruments(folder: str) -> bool:
+    """Return True when a song folder has at least one playable required instrument."""
+    chart_path = _find_chart(folder)
+    if chart_path and _chart_has_required_instruments(chart_path):
+        return True
+
+    midi_path = _find_midi(folder)
+    if midi_path and _midi_has_required_instruments(midi_path):
+        return True
+
+    return False
+
+
+def scan_no_part_song_folders(root_dir: str) -> tuple[list[str], int]:
+    """Scan song folders and report those with no playable required instruments."""
+    root_dir = os.path.realpath(root_dir)
+    if not os.path.isdir(root_dir):
+        err(f"Directory not found: {root_dir}")
+        sys.exit(1)
+
+    section("No-part scan")
+
+    matches = []
+    scanned = 0
+    for dirpath, dirnames, _filenames in os.walk(root_dir):
+        if not _is_song_folder(dirpath):
+            continue
+        dirnames[:] = []
+        scanned += 1
+
+        if has_required_instruments(dirpath):
+            continue
+
+        matches.append(os.path.realpath(dirpath))
+        warn(f"  No required instruments: {dirpath}")
+
+    info(
+        f"No-part scan complete: {len(matches)} folder(s) without required instruments, "
+        f"{scanned} song folder(s) scanned."
+    )
+    return matches, scanned
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  PART 3 — Song folder processing pipeline
 # ═══════════════════════════════════════════════════════════════════
@@ -1221,6 +1316,9 @@ Examples:
     python ch-chart-fix.py --scan-duplicates --badsongs \
         ~/Documents/badsongs.txt ~/Music/CloneHero/songs/
 
+    # Scan for song folders with no playable instruments
+    python ch-chart-fix.py --scan-no-parts --batch ~/Music/CloneHero/songs/
+
   # Dry run — show what would happen without writing any files
   python ch-chart-fix.py --dry-run ~/Downloads/some-song.zip
   python ch-chart-fix.py --batch --dry-run ~/Music/CloneHero/songs/
@@ -1238,6 +1336,11 @@ Examples:
         help="Scan duplicate song folders only; do not convert or downchart",
     )
     parser.add_argument(
+        "--scan-no-parts",
+        action="store_true",
+        help="Scan song folders with no playable instruments; do not convert or downchart",
+    )
+    parser.add_argument(
         "--badsongs",
         help="Path to Clone Hero badsongs.txt for duplicate pair comparisons",
     )
@@ -1252,6 +1355,10 @@ Examples:
     if args.dry_run:
         warn("DRY RUN — no files will be written.\n")
 
+    if args.scan_duplicates and args.scan_no_parts:
+        err("Use only one scan mode at a time.")
+        sys.exit(1)
+
     if args.badsongs and not args.scan_duplicates:
         err("--badsongs can only be used with --scan-duplicates.")
         sys.exit(1)
@@ -1260,7 +1367,7 @@ Examples:
 
     # Transparently handle .zip input
     if path.lower().endswith(".zip"):
-        if args.batch or args.scan_duplicates:
+        if args.batch or args.scan_duplicates or args.scan_no_parts:
             err("--batch cannot be used with a .zip file.")
             sys.exit(1)
         section(f"ZIP input: {path}")
@@ -1279,6 +1386,18 @@ Examples:
             else:
                 scan_root = real_path
         scan_duplicate_song_folders(scan_root, badsongs_path=args.badsongs)
+        sys.exit(0)
+
+    if args.scan_no_parts:
+        if args.batch:
+            scan_root = path
+        else:
+            real_path = os.path.realpath(path)
+            if os.path.isdir(real_path) and _is_song_folder(real_path):
+                scan_root = os.path.dirname(real_path)
+            else:
+                scan_root = real_path
+        scan_no_part_song_folders(scan_root)
         sys.exit(0)
 
     if args.batch:

@@ -574,3 +574,86 @@ class TestDuplicateDetection:
                 "/songs/Sikth - Cracks of Light (feat. Spencer Sotelo)",
             ),
         ]
+
+
+class TestNoPartDetection:
+    def test_chart_has_required_instruments(self, tmp_path):
+        chart_path = tmp_path / "notes.chart"
+        chart_path.write_text(
+            "\n".join(
+                [
+                    "[Song]",
+                    "{",
+                    "  Resolution = 192",
+                    "}",
+                    "[Single]",
+                    "{",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        assert ch._chart_has_required_instruments(str(chart_path)) is True
+
+    def test_chart_without_required_instruments(self, tmp_path):
+        chart_path = tmp_path / "notes.chart"
+        chart_path.write_text(
+            "\n".join(
+                [
+                    "[Song]",
+                    "{",
+                    "  Resolution = 192",
+                    "}",
+                    "[Events]",
+                    "{",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        assert ch._chart_has_required_instruments(str(chart_path)) is False
+
+    def test_has_required_instruments_uses_chart(self, tmp_path):
+        song_dir = tmp_path / "song"
+        song_dir.mkdir()
+        (song_dir / "song.ini").write_text("[song]\nname = Test\n", encoding="utf-8")
+        (song_dir / "notes.chart").write_text(
+            "\n".join(
+                [
+                    "[Song]",
+                    "{",
+                    "  Resolution = 192",
+                    "}",
+                    "[DoubleBass]",
+                    "{",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        assert ch.has_required_instruments(str(song_dir)) is True
+
+    def test_scan_no_part_song_folders_returns_matches(self, tmp_path):
+        good = tmp_path / "good"
+        good.mkdir()
+        (good / "song.ini").write_text("[song]\nname = Good\n", encoding="utf-8")
+        (good / "notes.chart").write_text(
+            "\n".join(["[Single]", "{", "}"]),
+            encoding="utf-8",
+        )
+
+        bad = tmp_path / "bad"
+        bad.mkdir()
+        (bad / "song.ini").write_text("[song]\nname = Bad\n", encoding="utf-8")
+        (bad / "notes.chart").write_text(
+            "\n".join(["[Events]", "{", "}"]),
+            encoding="utf-8",
+        )
+
+        matches, scanned = ch.scan_no_part_song_folders(str(tmp_path))
+
+        assert scanned == 2
+        assert matches == [str(bad.resolve())]

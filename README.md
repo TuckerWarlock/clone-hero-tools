@@ -103,6 +103,16 @@ The duplicate scanner assumes duplicates live in the same directory. When two
 sibling song folders look like the same song, the tool compares them and prints
 the keep/skip decision.
 
+### Scan song folders with no playable instruments
+
+```bash
+uv run ch-chart-fix.py --scan-no-parts --batch ~/Music/CloneHero/songs/
+```
+
+This mode only reports song folders that have no playable guitar, bass,
+rhythm, or keys content. It does not convert MIDI files or generate lower
+difficulties.
+
 ### Use `badsongs.txt` duplicate pairs
 
 ```bash
@@ -122,7 +132,7 @@ uv run ch-chart-fix.py --batch --dry-run ~/Music/CloneHero/songs/
 ### All options
 
 ```
-usage: ch-chart-fix [-h] [--batch] [--scan-duplicates] [--badsongs BADSONGS] [--dry-run] path
+usage: ch-chart-fix [-h] [--batch] [--scan-duplicates] [--scan-no-parts] [--badsongs BADSONGS] [--dry-run] path
 
 positional arguments:
   path        Song folder, or root directory when --batch is set
@@ -130,6 +140,7 @@ positional arguments:
 options:
   --batch     Process all song folders found under <path>
   --scan-duplicates  Scan duplicate song folders only; do not convert or downchart
+  --scan-no-parts    Scan song folders with no playable instruments; do not convert or downchart
   --badsongs  Path to Clone Hero badsongs.txt for duplicate pair comparisons
   --dry-run   Show what would be done without writing any files
   -h, --help  Show this help message and exit

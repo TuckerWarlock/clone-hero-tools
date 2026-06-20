@@ -217,3 +217,44 @@ def test_scan_duplicates_batch_reports_without_processing(tmp_path: Path) -> Non
 
     assert "[HardSingle]" not in preferred_content
     assert "[HardSingle]" not in skipped_content
+
+
+def test_scan_no_parts_batch_reports_without_processing(tmp_path: Path) -> None:
+    root = tmp_path / "songs"
+    root.mkdir()
+
+    good = root / "good"
+    good.mkdir()
+    (good / "song.ini").write_text(
+        "[song]\nname = Good\nartist = Test\n",
+        encoding="utf-8",
+    )
+    (good / "notes.chart").write_text("[Single]\n{\n}\n", encoding="utf-8")
+
+    bad = root / "bad"
+    bad.mkdir()
+    (bad / "song.ini").write_text(
+        "[song]\nname = Bad\nartist = Test\n",
+        encoding="utf-8",
+    )
+    (bad / "notes.chart").write_text("[Events]\n{\n}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_script_path()),
+            "--scan-no-parts",
+            "--batch",
+            str(root),
+        ],
+        cwd=_repo_root(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "No-part scan" in result.stdout
+    assert "No required instruments:" in result.stdout
+    assert "bad" in result.stdout
+    assert "[HardSingle]" not in (bad / "notes.chart").read_text(encoding="utf-8")
