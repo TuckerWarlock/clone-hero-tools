@@ -487,6 +487,18 @@ def _downchart_notes(notes_data: str, difficulty: str, resolution: int) -> str:
         if difficulty == "Easy" and color >= 3 and color != 7:
             color = 2
 
+        # ── Grid snapping ────────────────────────────────────────────
+        # Snap each note to the nearest 8th-note (Medium) or quarter-note (Easy)
+        # grid so generated notes always land on musical beat positions that
+        # match the audio, even when the Expert chart contains syncopated or
+        # 16th-note-offset notes.
+        if difficulty == "Medium":
+            step = resolution // 2
+            tick = round(tick / step) * step
+        elif difficulty == "Easy":
+            step = resolution
+            tick = round(tick / step) * step
+
         # ── Speed thinning ──────────────────────────────────────────
         if tick not in accepted_ticks:
             gap = tick - last_tick
